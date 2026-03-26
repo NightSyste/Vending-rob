@@ -1,46 +1,74 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
-task.wait(1) -- Kleiner Puffer für Charakter-Load
+task.wait(1)
 
 -- ============================================================
--- EINSTELLUNGEN
+-- EINSTELLUNGEN & SETUP
 -- ============================================================
-getgenv().AutoStartVending = true -- Setze auf false, wenn er nicht direkt nach dem Injecten starten soll
+getgenv().AutoStartVending = true 
 
 local OrionLib = loadstring(game:HttpGet('https://raw.githubusercontent.com/NightSyste/orion.lua/refs/heads/main/night.lua'))()
 
 local Players             = game:GetService("Players")
 local TweenService        = game:GetService("TweenService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualUser         = game:GetService("VirtualUser")
 local StarterGui          = game:GetService("StarterGui")
 local Workspace           = game:GetService("Workspace")
 local TeleportService     = game:GetService("TeleportService")
 local HttpService         = game:GetService("HttpService")
-
-local queue_on_teleport = syn and syn.queue_on_teleport or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local RunService          = game:GetService("RunService")
 
 local plr = Players.LocalPlayer
 
-local EJw = game:GetService("ReplicatedStorage"):WaitForChild("EJw")
+-- Anti-AFK (Verhindert den 20-Minuten Kick)
+plr.Idled:Connect(function()
+    VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    task.wait(1)
+    VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+end)
+
+-- Queue on Teleport (Auto-Execute nach Serverhop)
+local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or function() end
+if getgenv().AutoStartVending then
+    queue_on_teleport("getgenv().AutoStartVending = true; loadstring(game:HttpGet('DEIN_SCRIPT_LINK_HIER_EINTRAGEN'))()")
+end
+
+-- Remotes
+local EJw = ReplicatedStorage:WaitForChild("EJw", 10)
 local RemoteEvents = {
-    RobEvent = EJw:WaitForChild("a3126821-130a-4135-80e1-1d28cece4007"),
-    SellItem = EJw:WaitForChild("eb233e6a-acb9-4169-acb9-129fe8cb06bb"),
+    RobEvent = EJw and EJw:FindFirstChild("a3126821-130a-4135-80e1-1d28cece4007"),
+    SellItem = EJw and EJw:FindFirstChild("eb233e6a-acb9-4169-acb9-129fe8cb06bb"),
 }
 
 local VENDING_COLLECT_CODE   = "wRl"
 local ProximityPromptTimeBet = 2.5
 
 _G.vendingActive      = false
-_G.flightSpeed        = 160
-_G.vendingPoliceRange = 55
+_G.flightSpeed        = 180 
+_G.vendingPoliceRange = 65  
+_G.safeFlightHeight   = 250 
 
 local vendingLoopThread    = nil
 local instantCollectThread = nil
+local espThread            = nil
 
 local teleportActive   = false
 local currentTween     = nil
 local currentTweenConn = nil
 
-local SERVERHOP_POSITION = Vector3.new(-1292.9005126953125, -2, 3685.330810546875)
+local SERVERHOP_POSITION = CFrame.new(-1292.9, -2, 3685.3)
+
+-- ============================================================
+-- UI SETUP (Vorab für Status-Updates)
+-- ============================================================
+local Window = OrionLib:MakeWindow({Name = "Vending Rob", SaveConfig = true, ConfigFolder = "VendingConfig"})
+local MainTab = Window:MakeTab({Name = "Auto Farm", Icon = "rbxassetid://4483345998"})
+local StatusLabel = MainTab:AddLabel("Status: Warte auf Start...")
+
+local function UpdateStatus(text)
+    StatusLabel:Set("Status: " .. text)
+end
 
 -- ============================================================
 -- HILFSFUNKTIONEN
@@ -48,35 +76,28 @@ local SERVERHOP_POSITION = Vector3.new(-1292.9005126953125, -2, 3685.33081054687
 local function getChar()
     local char = plr.Character
     if not char then return nil, nil, nil end
-    local hum  = char:FindFirstChildOfClass("Humanoid")
-    local root = char:FindFirstChild("HumanoidRootPart")
-    return char, hum, root
+    return char, char:FindFirstChildOfClass("Humanoid"), char:FindFirstChild("HumanoidRootPart")
 end
 
 local function notify(title, text)
     pcall(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = title,
-            Text  = text,
-            Time  = 3
-        })
+        StarterGui:SetCore("SendNotification", {Title = title, Text = text, Time = 3})
     end)
 end
 
 local function stopCurrentTween()
+    teleportActive = false
     if currentTween then pcall(function() currentTween:Cancel() end); currentTween = nil end
     if currentTweenConn then pcall(function() currentTweenConn:Disconnect() end); currentTweenConn = nil end
-    teleportActive = false
 end
 
 local function isPoliceNearby()
-    local _, _, root = getChar()
-    if not root then return false end
-    local hum = root.Parent:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 25 then return true end -- Auto-Escape bei Low HP
+    local _, hum, root = getChar()
+    if not root or not hum then return false end
+    if hum.Health <= 25 then return true end 
 
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= plr and p.Team and p.Team.Name == "Police" then
+        if p ~= plr and p.Team and (p.Team.Name == "Police" or p.Team.Name == "Sheriff") then
             local pChar = p.Character
             if pChar and pChar:FindFirstChild("HumanoidRootPart") then
                 local dist = (pChar.HumanoidRootPart.Position - root.Position).Magnitude
@@ -89,47 +110,74 @@ local function isPoliceNearby()
     return false
 end
 
+local function waitForDrops()
+    local dropsFolder = Workspace:FindFirstChild("Drops")
+    if not dropsFolder then return end
+    
+    UpdateStatus("Warte auf das Einsammeln...")
+    
+    local waitTime = 0
+    local maxWaitTime = 10 -- Maximale Wartezeit in Sekunden, um nicht stecken zu bleiben
+    
+    while waitTime < maxWaitTime do
+        local hasDrops = false
+        local _, _, root = getChar()
+        
+        if root then
+            for _, obj in ipairs(dropsFolder:GetChildren()) do
+                if obj:IsA("MeshPart") and obj.Name == plr.Name and obj.Transparency == 0 then
+                    if (obj.Position - root.Position).Magnitude <= 35 then
+                        hasDrops = true
+                        break
+                    end
+                end
+            end
+        end
+        
+        if not hasDrops then
+            break -- Keine Drops mehr in der Nähe, wir können weiter
+        end
+        
+        task.wait(0.5)
+        waitTime = waitTime + 0.5
+    end
+end
+
 -- ============================================================
 -- SERVERHOP & ESCAPE LOGIK
 -- ============================================================
 local function doServerHop()
+    UpdateStatus("Suche neuen Server...")
     notify("Server Hop", "Suche sicheren Server...")
     task.wait(0.5)
 
-    -- Wenn du das Skript im Autoexec-Ordner deines Executors hast, startet es nach dem Hop von selbst.
     local success, servers = pcall(function()
-        return HttpService:JSONDecode(
-            game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")
-        ).data
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+        return HttpService:JSONDecode(game:HttpGet(url)).data
     end)
 
     if success and servers then
         for _, server in ipairs(servers) do
             if type(server) == "table" and server.playing and server.maxPlayers and server.id then
-                -- Sucht Server, die nicht voll sind und nicht der aktuelle Server
-                if server.playing < (server.maxPlayers - 1) and server.id ~= game.JobId then
-                    pcall(function()
-                        TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, plr)
-                    end)
-                    task.wait(2) -- Warte kurz, ob Teleport klappt
+                if server.playing < (server.maxPlayers - 2) and server.id ~= game.JobId then
+                    pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, plr) end)
+                    task.wait(2)
                 end
             end
         end
     end
-
-    -- Fallback, falls die API zickt
     TeleportService:Teleport(game.PlaceId, plr)
 end
 
 local function escapePolice()
-    _G.vendingActive = false -- Stoppt vorerst alle anderen Aktionen
-    notify("Polizei Entdeckt!", "Flucht wird eingeleitet...")
+    _G.vendingActive = false
+    UpdateStatus("POLIZEI ENTDECKT! Flucht...")
     stopCurrentTween()
     
     local _, _, root = getChar()
     if root then
-        -- Teleportiert dich in den Himmel und friert dich ein, damit du nicht fällst
-        root.CFrame = root.CFrame + Vector3.new(0, 800, 0)
+        -- Rettungs-Teleport in den Himmel
+        root.CFrame = root.CFrame + Vector3.new(0, 1500, 0)
         root.Anchored = true
     end
     
@@ -138,77 +186,66 @@ local function escapePolice()
 end
 
 -- ============================================================
--- AUTO COLLECT LOGIK (Hintergrund)
+-- AUTO COLLECT & POLICE ESP LOGIK
 -- ============================================================
-local function startAutoCollect()
-    local myName = plr.Name
+local function startBackgroundTasks()
     local dropsFolder = Workspace:WaitForChild("Drops", 5)
-    if not dropsFolder then return end
-    
     local Collected = {}
 
-    local function collectDrop(obj)
-        if Collected[obj] or obj.Transparency ~= 0 then return end
-        Collected[obj] = true
-        task.spawn(function()
-            pcall(function()
-                RemoteEvents.RobEvent:FireServer(obj, VENDING_COLLECT_CODE, true)
-                task.wait(ProximityPromptTimeBet)
-                RemoteEvents.RobEvent:FireServer(obj, VENDING_COLLECT_CODE, false)
-            end)
-            task.wait(0.3)
-            Collected[obj] = nil
-        end)
-    end
-
     while _G.vendingActive do
+        -- 1. Auto Collect Loot
         local _, _, root = getChar()
-        if root then
+        if root and dropsFolder and RemoteEvents.RobEvent then
             for _, obj in ipairs(dropsFolder:GetChildren()) do
-                if obj:IsA("MeshPart") and obj.Name == myName and (obj.Position - root.Position).Magnitude <= 35 then
-                    collectDrop(obj)
+                if obj:IsA("MeshPart") and obj.Name == plr.Name and obj.Transparency == 0 and not Collected[obj] then
+                    if (obj.Position - root.Position).Magnitude <= 35 then
+                        Collected[obj] = true
+                        task.spawn(function()
+                            pcall(function()
+                                RemoteEvents.RobEvent:FireServer(obj, VENDING_COLLECT_CODE, true)
+                                task.wait(ProximityPromptTimeBet)
+                                RemoteEvents.RobEvent:FireServer(obj, VENDING_COLLECT_CODE, false)
+                            end)
+                            task.wait(0.3)
+                            Collected[obj] = nil
+                        end)
+                    end
                 end
             end
         end
+
+        -- 2. Police ESP Updates
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= plr and p.Team and (p.Team.Name == "Police" or p.Team.Name == "Sheriff") then
+                if p.Character then
+                    local hl = p.Character:FindFirstChild("CopESP") or Instance.new("Highlight", p.Character)
+                    hl.Name = "CopESP"
+                    hl.FillColor = Color3.fromRGB(255, 0, 0)
+                    hl.FillTransparency = 0.5
+                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                end
+            end
+        end
+
         task.wait(0.2)
     end
 end
 
 -- ============================================================
--- TWEEN & MOVEMENT
+-- SAFE TWEEN (Fliegt über Gebäude)
 -- ============================================================
-local function tweenTo(destination)
-    if teleportActive then stopCurrentTween() end
-    teleportActive = true
-
-    local char, hum, hrp = getChar()
+local function doTween(targetCF, speedModifier)
     local vehicle = Workspace.Vehicles:FindFirstChild(plr.Name)
-    if not vehicle then teleportActive = false return false end
+    if not vehicle or not vehicle.PrimaryPart then return false end
 
-    local driveSeat = vehicle:FindFirstChild("DriveSeat", true) or vehicle:FindFirstChildWhichIsA("VehicleSeat", true)
-    if not driveSeat then teleportActive = false return false end
-    vehicle.PrimaryPart = driveSeat
-
-    -- Sicherstellen, dass man sitzt
-    if hum and hum.SeatPart ~= driveSeat then
-        if hrp then hrp.CFrame = driveSeat.CFrame end
-        task.wait(0.1)
-        driveSeat:Sit(hum)
-        task.wait(0.1)
-    end
-
-    local targetCF = (typeof(destination) == "CFrame") and destination or CFrame.new(destination)
-    local duration = (vehicle:GetPivot().Position - targetCF.Position).Magnitude / _G.flightSpeed
+    local distance = (vehicle:GetPivot().Position - targetCF.Position).Magnitude
+    local duration = distance / (_G.flightSpeed * (speedModifier or 1))
 
     local val = Instance.new("CFrameValue")
     val.Value = vehicle:GetPivot()
     
     currentTweenConn = val.Changed:Connect(function(newCF) 
-        if vehicle and vehicle.PrimaryPart then
-            vehicle:PivotTo(newCF) 
-        else
-            stopCurrentTween() -- Abbruch, falls Auto despawnt
-        end
+        if vehicle and vehicle.PrimaryPart then vehicle:PivotTo(newCF) else stopCurrentTween() end
     end)
     
     currentTween = TweenService:Create(val, TweenInfo.new(duration, Enum.EasingStyle.Linear), {Value = targetCF})
@@ -217,21 +254,71 @@ local function tweenTo(destination)
 
     if currentTweenConn then currentTweenConn:Disconnect() end
     val:Destroy()
-    teleportActive = false
     return true
 end
 
-local function plrTween(targetCFrame)
-    local _, _, root = getChar()
-    if not root then return end
-    local tw = TweenService:Create(root, TweenInfo.new(0.4, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
-    tw:Play()
-    tw.Completed:Wait()
+local function safeTweenTo(targetCF)
+    if teleportActive then stopCurrentTween() end
+    teleportActive = true
+
+    local _, hum, hrp = getChar()
+    local vehicle = Workspace.Vehicles:FindFirstChild(plr.Name)
+    if not vehicle then teleportActive = false return false end
+
+    local driveSeat = vehicle:FindFirstChild("DriveSeat", true) or vehicle:FindFirstChildWhichIsA("VehicleSeat", true)
+    if not driveSeat then teleportActive = false return false end
+    vehicle.PrimaryPart = driveSeat
+
+    -- In den Sitz zwingen
+    if hum and hum.SeatPart ~= driveSeat then
+        if hrp then hrp.CFrame = driveSeat.CFrame end
+        task.wait(0.1)
+        driveSeat:Sit(hum)
+        task.wait(0.2)
+    end
+
+    UpdateStatus("Hebe ab...")
+    local startPos = vehicle:GetPivot().Position
+    local skyStartCF = CFrame.new(startPos.X, _G.safeFlightHeight, startPos.Z)
+    if not doTween(skyStartCF, 1.5) then teleportActive = false return false end
+
+    UpdateStatus("Fliege über Gebäude...")
+    local skyEndCF = CFrame.new(targetCF.Position.X, _G.safeFlightHeight, targetCF.Position.Z)
+    if not doTween(skyEndCF, 1) then teleportActive = false return false end
+
+    UpdateStatus("Lande am Ziel...")
+    if not doTween(targetCF, 1.5) then teleportActive = false return false end
+
+    teleportActive = false
+    return true
 end
 
 -- ============================================================
 -- VENDING RAUB LOGIK
 -- ============================================================
+local function interactWithPrompt(targetPart)
+    local prompt = targetPart:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt and fireproximityprompt then
+        for i = 1, 10 do
+             if isPoliceNearby() then escapePolice(); return false end
+             fireproximityprompt(prompt, 1)
+             task.wait(0.2)
+        end
+        return true
+    end
+    
+    for i = 1, 10 do
+        if isPoliceNearby() then escapePolice(); return false end
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+            task.wait(0.1)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+        end)
+        task.wait(0.2)
+    end
+    return false
+end
+
 local function VendingRob(targetVending)
     local glass = targetVending:FindFirstChild("Glass")
     if not glass then return false end
@@ -239,31 +326,29 @@ local function VendingRob(targetVending)
     if isPoliceNearby() then escapePolice(); return false end
 
     local targetPos = glass.Position - glass.CFrame.LookVector * 1.5
-    local success = tweenTo(CFrame.lookAt(targetPos, glass.Position))
+    local success = safeTweenTo(CFrame.lookAt(targetPos, glass.Position))
     if not success then return false end
 
     task.wait(0.3)
-    local _, hum = getChar()
+    local _, hum, hrp = getChar()
     if hum then hum.Sit = false end
-    task.wait(0.5)
+    task.wait(0.2)
 
-    plrTween(CFrame.lookAt(glass.Position - glass.CFrame.LookVector * 1.5, glass.Position))
-    task.wait(0.3)
-
-    for i = 1, 10 do
-        if isPoliceNearby() then 
-            escapePolice() 
-            return false 
-        end
-        pcall(function()
-            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-            task.wait(0.1)
-            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-        end)
-        task.wait(0.3)
+    if hrp then
+        local tw = TweenService:Create(hrp, TweenInfo.new(0.4, Enum.EasingStyle.Linear), {CFrame = CFrame.lookAt(targetPos, glass.Position)})
+        tw:Play()
+        tw.Completed:Wait()
     end
-
-    task.wait(0.5)
+    
+    task.wait(0.2)
+    if isPoliceNearby() then escapePolice(); return false end
+    
+    UpdateStatus("Knacke Automaten...")
+    interactWithPrompt(targetVending)
+    
+    -- Warten, bis alles eingesammelt ist
+    waitForDrops()
+    
     return true
 end
 
@@ -276,7 +361,7 @@ local function findNearestVending()
     local nearest, minDist = nil, math.huge
     for _, model in ipairs(folder:GetChildren()) do
         local light = model:FindFirstChild("Light")
-        if light and math.abs(light.Color.R - 73/255) < 0.1 then
+        if light and math.abs(light.Color.R - 73/255) < 0.1 then 
             local dist = (light.Position - root.Position).Magnitude
             if dist < minDist then
                 minDist = dist
@@ -299,14 +384,15 @@ local function vendingMainLoop()
 
         local vehicle = Workspace.Vehicles:FindFirstChild(plr.Name)
         if not vehicle then
-            notify("Vehicle", "Bitte spawne ein Auto! Warte...")
+            UpdateStatus("Kein Auto! Bitte spawne eins.")
             task.wait(3)
             continue
         end
 
         local target = findNearestVending()
         if not target then
-            tweenTo(CFrame.new(SERVERHOP_POSITION))
+            UpdateStatus("Keine Automaten mehr bereit! ServerHop...")
+            safeTweenTo(SERVERHOP_POSITION)
             doServerHop()
             break
         end
@@ -317,49 +403,51 @@ local function vendingMainLoop()
 end
 
 -- ============================================================
--- UI SETUP (Orion)
+-- ORION MENÜ TABS & SCHALTER
 -- ============================================================
-local Window = OrionLib:MakeWindow({Name = "Vending Rob", SaveConfig = true, ConfigFolder = "VendingConfig"})
-local MainTab = Window:MakeTab({Name = "Rob"})
-
 local RobToggle = MainTab:AddToggle({
-    Name = "Vending Rob",
+    Name = "Start",
     Default = false,
     Callback = function(Value)
         _G.vendingActive = Value
         if Value then
-            -- Verhindert, dass die Schleife mehrfach gestartet wird
             if vendingLoopThread then task.cancel(vendingLoopThread) end
             if instantCollectThread then task.cancel(instantCollectThread) end
             
             vendingLoopThread = task.spawn(vendingMainLoop)
-            instantCollectThread = task.spawn(startAutoCollect)
-            notify("System", "Rob gestartet!")
+            instantCollectThread = task.spawn(startBackgroundTasks)
+            notify("Rob", "rob start")
         else
+            UpdateStatus("Pausiert.")
             if vendingLoopThread then task.cancel(vendingLoopThread); vendingLoopThread = nil end
             if instantCollectThread then task.cancel(instantCollectThread); instantCollectThread = nil end
             stopCurrentTween()
-            notify("System", "rob gestoppt!")
+            notify("Rob", "rob gestoppt")
         end
     end
 })
 
 MainTab:AddSlider({
-    Name = "Flight Speed",
-    Min = 50, Max = 300, Default = 160,
+    Name = "geschwindigkeit",
+    Min = 150, Max = 200, Default = 180,
     Callback = function(Value) _G.flightSpeed = Value end
 })
 
 MainTab:AddSlider({
-    Name = "Police Detection Range",
-    Min = 20, Max = 200, Default = 55,
+    Name = "Flughöhe",
+    Min = 0, Max = 50, Default = 0,
+    Callback = function(Value) _G.safeFlightHeight = Value end
+})
+
+MainTab:AddSlider({
+    Name = "Polizei Radius",
+    Min = 20, Max = 300, Default = 70,
     Callback = function(Value) _G.vendingPoliceRange = Value end
 })
 
 OrionLib:Init()
 
--- AUTO EXECUTE LOGIK
 if getgenv().AutoStartVending then
-    task.wait(2) -- Wartet kurz, bis das UI geladen ist
-    RobToggle:Set(true) -- Schaltet den Toggle automatisch im UI an
+    task.wait(2)
+    RobToggle:Set(true)
 end
