@@ -18,56 +18,18 @@ local RunService          = game:GetService("RunService")
 
 local plr = Players.LocalPlayer
 
--- Anti-AFK
+-- Anti-AFK (Verhindert den 20-Minuten Kick)
 plr.Idled:Connect(function()
     VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
     task.wait(1)
     VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
 end)
 
--- Auto-Execute nach Serverhop
-local function SetupAutoExecute()
-    local queueOnTeleport = (syn and syn.queue_on_teleport)
-        or (fluxus and fluxus.queue_on_teleport)
-        or (rconsoleinfo and queue_on_teleport)
-        or (typeof(queue_on_teleport) == "function" and queue_on_teleport)
-        or nil
-
-    if queueOnTeleport then
-        queueOnTeleport([[
-            wait(8)
-            local content = nil
-            for i = 1, 5 do
-                local ok = pcall(function()
-                    content = game:HttpGet("https://raw.githubusercontent.com/NightSyste/Vending-rob/refs/heads/main/rob.lua")
-                end)
-                if ok and content and content ~= "" then break end
-                content = nil
-                wait(3)
-            end
-
-            if not content then
-                game:GetService("Players").LocalPlayer:Kick("Script konnte nicht geladen werden. (Fehler 1)")
-                return
-            end
-
-            local ok2 = pcall(function()
-                loadstring(content)()
-            end)
-            if not ok2 then
-                game:GetService("Players").LocalPlayer:Kick("Script konnte nicht geladen werden. (Fehler 2)")
-            end
-        ]])
-    end
+-- Queue on Teleport (Auto-Execute nach Serverhop)
+local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or function() end
+if getgenv().AutoStartVending then
+    queue_on_teleport("getgenv().AutoStartVending = true; loadstring(game:HttpGet('https://raw.githubusercontent.com/NightSyste/Vending-rob/refs/heads/main/rob.lua'))()")
 end
-
-SetupAutoExecute()
-
-game:GetService("Players").LocalPlayer.OnTeleport:Connect(function(state)
-    if state == Enum.TeleportState.Started then
-        SetupAutoExecute()
-    end
-end)
 
 -- Remotes
 local EJw = ReplicatedStorage:WaitForChild("EJw", 10)
@@ -80,9 +42,9 @@ local VENDING_COLLECT_CODE   = "wRl"
 local ProximityPromptTimeBet = 2.5
 
 _G.vendingActive      = false
-_G.flightSpeed        = 180 
-_G.vendingPoliceRange = 65  
-_G.safeFlightHeight   = 250 
+_G.flightSpeed        = 160
+_G.vendingPoliceRange = 70  
+_G.safeFlightHeight   = 160 
 
 local vendingLoopThread    = nil
 local instantCollectThread = nil
@@ -146,7 +108,7 @@ local function waitForDrops()
     UpdateStatus("Warte auf das Einsammeln...")
     
     local waitTime = 0
-    local maxWaitTime = 10
+    local maxWaitTime = 12
     
     while waitTime < maxWaitTime do
         local hasDrops = false
@@ -163,7 +125,9 @@ local function waitForDrops()
             end
         end
         
-        if not hasDrops then break end
+        if not hasDrops then
+            break -- Keine Drops mehr in der Nähe, wir können weiter
+        end
         
         task.wait(0.5)
         waitTime = waitTime + 0.5
@@ -200,6 +164,7 @@ local function escapePolice()
     
     local _, _, root = getChar()
     if root then
+        -- Rettungs-Teleport in den Himmel
         root.CFrame = root.CFrame + Vector3.new(0, 1500, 0)
         root.Anchored = true
     end
@@ -213,6 +178,7 @@ local function startBackgroundTasks()
     local Collected = {}
 
     while _G.vendingActive do
+        -- 1. Auto Collect Loot
         local _, _, root = getChar()
         if root and dropsFolder and RemoteEvents.RobEvent then
             for _, obj in ipairs(dropsFolder:GetChildren()) do
@@ -233,6 +199,7 @@ local function startBackgroundTasks()
             end
         end
 
+        -- 2. Police ESP Updates
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= plr and p.Team and (p.Team.Name == "Police" or p.Team.Name == "Sheriff") then
                 if p.Character then
@@ -284,6 +251,7 @@ local function safeTweenTo(targetCF)
     if not driveSeat then teleportActive = false return false end
     vehicle.PrimaryPart = driveSeat
 
+    -- In den Sitz zwingen
     if hum and hum.SeatPart ~= driveSeat then
         if hrp then hrp.CFrame = driveSeat.CFrame end
         task.wait(0.1)
@@ -356,6 +324,8 @@ local function VendingRob(targetVending)
     
     UpdateStatus("Knacke Automaten...")
     interactWithPrompt(targetVending)
+    
+    -- Warten, bis alles eingesammelt ist
     waitForDrops()
     
     return true
@@ -432,19 +402,19 @@ local RobToggle = MainTab:AddToggle({
 
 MainTab:AddSlider({
     Name = "geschwindigkeit",
-    Min = 150, Max = 200, Default = 180,
+    Min = 150, Max = 170, Default = 160,
     Callback = function(Value) _G.flightSpeed = Value end
 })
 
 MainTab:AddSlider({
     Name = "Flughöhe",
-    Min = 0, Max = 50, Default = 0,
+    Min = 0, Max = 50, Default = 10,
     Callback = function(Value) _G.safeFlightHeight = Value end
 })
 
 MainTab:AddSlider({
     Name = "Polizei Radius",
-    Min = 20, Max = 300, Default = 70,
+    Min = 20, Max = 300, Default = 80,
     Callback = function(Value) _G.vendingPoliceRange = Value end
 })
 
