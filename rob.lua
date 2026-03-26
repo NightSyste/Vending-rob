@@ -319,11 +319,11 @@ end
 -- ============================================================
 -- UI SETUP (Orion)
 -- ============================================================
-local Window = OrionLib:MakeWindow({Name = "Vending Rob Pro", SaveConfig = true, ConfigFolder = "VendingConfig"})
-local MainTab = Window:MakeTab({Name = "Main"})
+local Window = OrionLib:MakeWindow({Name = "Vending Rob", SaveConfig = true, ConfigFolder = "VendingConfig"})
+local MainTab = Window:MakeTab({Name = "Rob"})
 
 local RobToggle = MainTab:AddToggle({
-    Name = "Activate Vending Rob",
+    Name = "Vending Rob",
     Default = false,
     Callback = function(Value)
         _G.vendingActive = Value
@@ -334,12 +334,12 @@ local RobToggle = MainTab:AddToggle({
             
             vendingLoopThread = task.spawn(vendingMainLoop)
             instantCollectThread = task.spawn(startAutoCollect)
-            notify("System", "Bot gestartet!")
+            notify("System", "Rob gestartet!")
         else
             if vendingLoopThread then task.cancel(vendingLoopThread); vendingLoopThread = nil end
             if instantCollectThread then task.cancel(instantCollectThread); instantCollectThread = nil end
             stopCurrentTween()
-            notify("System", "Bot gestoppt!")
+            notify("System", "rob gestoppt!")
         end
     end
 })
