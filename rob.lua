@@ -1,9 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 task.wait(1)
 
--- ============================================================
--- EINSTELLUNGEN & SETUP
--- ============================================================
 getgenv().AutoStartVending = true 
 
 local OrionLib = loadstring(game:HttpGet('https://raw.githubusercontent.com/NightSyste/orion.lua/refs/heads/main/night.lua'))()
@@ -21,18 +18,56 @@ local RunService          = game:GetService("RunService")
 
 local plr = Players.LocalPlayer
 
--- Anti-AFK (Verhindert den 20-Minuten Kick)
+-- Anti-AFK
 plr.Idled:Connect(function()
     VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
     task.wait(1)
     VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
 end)
 
--- Queue on Teleport (Auto-Execute nach Serverhop)
-local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or function() end
-if getgenv().AutoStartVending then
-    queue_on_teleport("getgenv().AutoStartVending = true; loadstring(game:HttpGet('DEIN_SCRIPT_LINK_HIER_EINTRAGEN'))()")
+-- Auto-Execute nach Serverhop
+local function SetupAutoExecute()
+    local queueOnTeleport = (syn and syn.queue_on_teleport)
+        or (fluxus and fluxus.queue_on_teleport)
+        or (rconsoleinfo and queue_on_teleport)
+        or (typeof(queue_on_teleport) == "function" and queue_on_teleport)
+        or nil
+
+    if queueOnTeleport then
+        queueOnTeleport([[
+            wait(8)
+            local content = nil
+            for i = 1, 5 do
+                local ok = pcall(function()
+                    content = game:HttpGet("https://raw.githubusercontent.com/NightSyste/Vending-rob/refs/heads/main/rob.lua")
+                end)
+                if ok and content and content ~= "" then break end
+                content = nil
+                wait(3)
+            end
+
+            if not content then
+                game:GetService("Players").LocalPlayer:Kick("Script konnte nicht geladen werden. (Fehler 1)")
+                return
+            end
+
+            local ok2 = pcall(function()
+                loadstring(content)()
+            end)
+            if not ok2 then
+                game:GetService("Players").LocalPlayer:Kick("Script konnte nicht geladen werden. (Fehler 2)")
+            end
+        ]])
+    end
 end
+
+SetupAutoExecute()
+
+game:GetService("Players").LocalPlayer.OnTeleport:Connect(function(state)
+    if state == Enum.TeleportState.Started then
+        SetupAutoExecute()
+    end
+end)
 
 -- Remotes
 local EJw = ReplicatedStorage:WaitForChild("EJw", 10)
@@ -59,9 +94,6 @@ local currentTweenConn = nil
 
 local SERVERHOP_POSITION = CFrame.new(-1292.9, -2, 3685.3)
 
--- ============================================================
--- UI SETUP (Vorab für Status-Updates)
--- ============================================================
 local Window = OrionLib:MakeWindow({Name = "Vending Rob", SaveConfig = true, ConfigFolder = "VendingConfig"})
 local MainTab = Window:MakeTab({Name = "Auto Farm", Icon = "rbxassetid://4483345998"})
 local StatusLabel = MainTab:AddLabel("Status: Warte auf Start...")
@@ -70,9 +102,6 @@ local function UpdateStatus(text)
     StatusLabel:Set("Status: " .. text)
 end
 
--- ============================================================
--- HILFSFUNKTIONEN
--- ============================================================
 local function getChar()
     local char = plr.Character
     if not char then return nil, nil, nil end
@@ -117,7 +146,7 @@ local function waitForDrops()
     UpdateStatus("Warte auf das Einsammeln...")
     
     local waitTime = 0
-    local maxWaitTime = 10 -- Maximale Wartezeit in Sekunden, um nicht stecken zu bleiben
+    local maxWaitTime = 10
     
     while waitTime < maxWaitTime do
         local hasDrops = false
@@ -134,18 +163,13 @@ local function waitForDrops()
             end
         end
         
-        if not hasDrops then
-            break -- Keine Drops mehr in der Nähe, wir können weiter
-        end
+        if not hasDrops then break end
         
         task.wait(0.5)
         waitTime = waitTime + 0.5
     end
 end
 
--- ============================================================
--- SERVERHOP & ESCAPE LOGIK
--- ============================================================
 local function doServerHop()
     UpdateStatus("Suche neuen Server...")
     notify("Server Hop", "Suche sicheren Server...")
@@ -176,7 +200,6 @@ local function escapePolice()
     
     local _, _, root = getChar()
     if root then
-        -- Rettungs-Teleport in den Himmel
         root.CFrame = root.CFrame + Vector3.new(0, 1500, 0)
         root.Anchored = true
     end
@@ -185,15 +208,11 @@ local function escapePolice()
     doServerHop()
 end
 
--- ============================================================
--- AUTO COLLECT & POLICE ESP LOGIK
--- ============================================================
 local function startBackgroundTasks()
     local dropsFolder = Workspace:WaitForChild("Drops", 5)
     local Collected = {}
 
     while _G.vendingActive do
-        -- 1. Auto Collect Loot
         local _, _, root = getChar()
         if root and dropsFolder and RemoteEvents.RobEvent then
             for _, obj in ipairs(dropsFolder:GetChildren()) do
@@ -214,7 +233,6 @@ local function startBackgroundTasks()
             end
         end
 
-        -- 2. Police ESP Updates
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= plr and p.Team and (p.Team.Name == "Police" or p.Team.Name == "Sheriff") then
                 if p.Character then
@@ -231,9 +249,6 @@ local function startBackgroundTasks()
     end
 end
 
--- ============================================================
--- SAFE TWEEN (Fliegt über Gebäude)
--- ============================================================
 local function doTween(targetCF, speedModifier)
     local vehicle = Workspace.Vehicles:FindFirstChild(plr.Name)
     if not vehicle or not vehicle.PrimaryPart then return false end
@@ -269,7 +284,6 @@ local function safeTweenTo(targetCF)
     if not driveSeat then teleportActive = false return false end
     vehicle.PrimaryPart = driveSeat
 
-    -- In den Sitz zwingen
     if hum and hum.SeatPart ~= driveSeat then
         if hrp then hrp.CFrame = driveSeat.CFrame end
         task.wait(0.1)
@@ -293,9 +307,6 @@ local function safeTweenTo(targetCF)
     return true
 end
 
--- ============================================================
--- VENDING RAUB LOGIK
--- ============================================================
 local function interactWithPrompt(targetPart)
     local prompt = targetPart:FindFirstChildWhichIsA("ProximityPrompt", true)
     if prompt and fireproximityprompt then
@@ -345,8 +356,6 @@ local function VendingRob(targetVending)
     
     UpdateStatus("Knacke Automaten...")
     interactWithPrompt(targetVending)
-    
-    -- Warten, bis alles eingesammelt ist
     waitForDrops()
     
     return true
@@ -372,9 +381,6 @@ local function findNearestVending()
     return nearest
 end
 
--- ============================================================
--- MAIN LOOP
--- ============================================================
 local function vendingMainLoop()
     while _G.vendingActive do
         if isPoliceNearby() then
@@ -402,9 +408,6 @@ local function vendingMainLoop()
     end
 end
 
--- ============================================================
--- ORION MENÜ TABS & SCHALTER
--- ============================================================
 local RobToggle = MainTab:AddToggle({
     Name = "Start",
     Default = false,
