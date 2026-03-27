@@ -42,7 +42,7 @@ local VENDING_COLLECT_CODE   = "wRl"
 local ProximityPromptTimeBet = 2.5
 
 _G.vendingActive      = false
-_G.flightSpeed        = 230
+_G.flightSpeed        = 205
 _G.vendingPoliceRange = 70  
 _G.safeFlightHeight   = 150 
 
@@ -402,7 +402,7 @@ local RobToggle = MainTab:AddToggle({
 
 MainTab:AddSlider({
     Name = "geschwindigkeit",
-    Min = 150, Max = 300, Default = 230,
+    Min = 150, Max = 250, Default = 205,
     Callback = function(Value) _G.flightSpeed = Value end
 })
 
